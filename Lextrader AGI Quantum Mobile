@@ -1,0 +1,1054 @@
+// Lextrader AGI Quantum Mobile - Day Trade AI v1.0
+// Sistema de IA para Day Trading com Múltiplas Estratégias
+
+class QuantumTraderAI {
+    constructor(config = {}) {
+        this.version = "1.0.0";
+        this.name = "Lextrader AGI Quantum";
+        
+        // Configurações do trader
+        this.config = {
+            riskPerTrade: config.riskPerTrade || 0.02, // 2% por trade
+            maxPositions: config.maxPositions || 3,
+            takeProfit: config.takeProfit || 0.015, // 1.5%
+            stopLoss: config.stopLoss || 0.01, // 1%
+            useTrailingStop: config.useTrailingStop || true,
+            tradingHours: config.tradingHours || {
+                start: "09:30",
+                end: "16:00"
+            },
+            ...config
+        };
+        
+        // Estado do sistema
+        this.state = {
+            activePositions: [],
+            tradingEnabled: true,
+            marketStatus: "closed",
+            dailyPL: 0,
+            todayTrades: 0,
+            winRate: 0,
+            currentBalance: config.initialBalance || 10000
+        };
+        
+        // Módulos da IA
+        this.modules = {
+            marketAnalyzer: new MarketAnalyzer(),
+            riskManager: new RiskManager(this.config),
+            strategyEngine: new StrategyEngine(),
+            emotionController: new EmotionController(),
+            executionEngine: new ExecutionEngine()
+        };
+        
+        // Histórico e aprendizado
+        this.history = [];
+        this.learning = new MachineLearningModule();
+        
+        this.initialize();
+    }
+    
+    initialize() {
+        console.log(`🔄 ${this.name} v${this.version} inicializando...`);
+        this.loadPatterns();
+        this.loadIndicators();
+        this.setupEventListeners();
+    }
+    
+    // Análise de mercado em tempo real
+    async analyzeMarket(symbol, data) {
+        try {
+            const analysis = {
+                timestamp: Date.now(),
+                symbol: symbol,
+                price: data.price,
+                volume: data.volume,
+                indicators: {},
+                signals: [],
+                confidence: 0
+            };
+            
+            // Análise técnica
+            analysis.indicators = await this.modules.marketAnalyzer.calculateIndicators(data);
+            
+            // Sinais de trading
+            analysis.signals = await this.detectSignals(analysis);
+            
+            // Análise de sentimento
+            analysis.sentiment = await this.analyzeSentiment(data);
+            
+            // Confiança da análise
+            analysis.confidence = this.calculateConfidence(analysis);
+            
+            // Gestão de risco
+            analysis.riskAssessment = this.modules.riskManager.assessRisk(analysis);
+            
+            return analysis;
+        } catch (error) {
+            console.error("Erro na análise:", error);
+            return null;
+        }
+    }
+    
+    // Detecção de sinais de trading
+    async detectSignals(analysis) {
+        const signals = [];
+        const indicators = analysis.indicators;
+        
+        // Estratégia 1: Crossover de Médias Móveis
+        if (indicators.ema9 && indicators.ema21) {
+            if (indicators.ema9 > indicators.ema21 && 
+                indicators.prevEma9 <= indicators.prevEma21) {
+                signals.push({
+                    type: "BUY",
+                    strategy: "MA_CROSSOVER",
+                    strength: this.calculateSignalStrength(indicators)
+                });
+            }
+            
+            if (indicators.ema9 < indicators.ema21 && 
+                indicators.prevEma9 >= indicators.prevEma21) {
+                signals.push({
+                    type: "SELL",
+                    strategy: "MA_CROSSOVER",
+                    strength: this.calculateSignalStrength(indicators)
+                });
+            }
+        }
+        
+        // Estratégia 2: RSI sobrevendido/sobrecomprado
+        if (indicators.rsi) {
+            if (indicators.rsi < 30) {
+                signals.push({
+                    type: "BUY",
+                    strategy: "RSI_OVERSOLD",
+                    strength: (30 - indicators.rsi) / 30
+                });
+            }
+            
+            if (indicators.rsi > 70) {
+                signals.push({
+                    type: "SELL",
+                    strategy: "RSI_OVERBOUGHT",
+                    strength: (indicators.rsi - 70) / 30
+                });
+            }
+        }
+        
+        // Estratégia 3: Bandas de Bollinger
+        if (indicators.bb) {
+            if (analysis.price <= indicators.bb.lower) {
+                signals.push({
+                    type: "BUY",
+                    strategy: "BB_Oversold",
+                    strength: 0.8
+                });
+            }
+            
+            if (analysis.price >= indicators.bb.upper) {
+                signals.push({
+                    type: "SELL",
+                    strategy: "BB_Overbought",
+                    strength: 0.8
+                });
+            }
+        }
+        
+        // Estratégia 4: Volume Spike
+        if (indicators.volumeRatio > 2) {
+            signals.push({
+                type: indicators.price > indicators.vwap ? "BUY" : "SELL",
+                strategy: "VOLUME_SPIKE",
+                strength: Math.min(indicators.volumeRatio / 3, 1)
+            });
+        }
+        
+        // Filtragem e priorização
+        return this.prioritizeSignals(signals, analysis);
+    }
+    
+    // Execução de trades
+    async executeTrade(signal, analysis) {
+        if (!this.state.tradingEnabled || 
+            this.state.activePositions.length >= this.config.maxPositions) {
+            return null;
+        }
+        
+        // Verificar horário de trading
+        if (!this.isTradingHours()) {
+            return { success: false, reason: "Fora do horário de trading" };
+        }
+        
+        // Calcular tamanho da posição
+        const positionSize = this.calculatePositionSize(
+            analysis.price, 
+            signal.type, 
+            analysis.riskAssessment
+        );
+        
+        // Executar ordem
+        const trade = {
+            id: this.generateTradeId(),
+            timestamp: Date.now(),
+            symbol: analysis.symbol,
+            type: signal.type,
+            entryPrice: analysis.price,
+            positionSize: positionSize,
+            takeProfit: analysis.price * (1 + (signal.type === "BUY" ? 
+                this.config.takeProfit : -this.config.takeProfit)),
+            stopLoss: analysis.price * (1 + (signal.type === "BUY" ? 
+                -this.config.stopLoss : this.config.stopLoss)),
+            signal: signal,
+            status: "open"
+        };
+        
+        // Adicionar à lista de posições ativas
+        this.state.activePositions.push(trade);
+        this.state.todayTrades++;
+        
+        // Monitorar posição
+        this.monitorPosition(trade);
+        
+        // Registrar no histórico
+        this.history.push({
+            ...trade,
+            analysis: analysis
+        });
+        
+        return {
+            success: true,
+            trade: trade,
+            message: `Trade ${signal.type} executado para ${analysis.symbol}`
+        };
+    }
+    
+    // Monitoramento de posições abertas
+    monitorPosition(trade) {
+        const monitorInterval = setInterval(async () => {
+            try {
+                const currentPrice = await this.getCurrentPrice(trade.symbol);
+                
+                // Verificar take profit
+                if ((trade.type === "BUY" && currentPrice >= trade.takeProfit) ||
+                    (trade.type === "SELL" && currentPrice <= trade.takeProfit)) {
+                    await this.closePosition(trade, "TAKE_PROFIT", currentPrice);
+                    clearInterval(monitorInterval);
+                    return;
+                }
+                
+                // Verificar stop loss
+                if ((trade.type === "BUY" && currentPrice <= trade.stopLoss) ||
+                    (trade.type === "SELL" && currentPrice >= trade.stopLoss)) {
+                    await this.closePosition(trade, "STOP_LOSS", currentPrice);
+                    clearInterval(monitorInterval);
+                    return;
+                }
+                
+                // Trailing stop dinâmico
+                if (this.config.useTrailingStop) {
+                    this.updateTrailingStop(trade, currentPrice);
+                }
+                
+                // Atualizar informações da posição
+                trade.currentPrice = currentPrice;
+                trade.unrealizedPL = this.calculateUnrealizedPL(trade);
+                
+            } catch (error) {
+                console.error("Erro no monitoramento:", error);
+            }
+        }, 1000); // Atualizar a cada segundo
+    }
+    
+    // Fechamento de posição
+    async closePosition(trade, reason, exitPrice) {
+        const index = this.state.activePositions.findIndex(p => p.id === trade.id);
+        if (index === -1) return;
+        
+        trade.exitPrice = exitPrice;
+        trade.exitTime = Date.now();
+        trade.exitReason = reason;
+        trade.status = "closed";
+        
+        // Calcular P&L
+        const pl = this.calculatePL(trade);
+        trade.realizedPL = pl;
+        
+        // Atualizar saldo
+        this.state.currentBalance += pl;
+        this.state.dailyPL += pl;
+        
+        // Atualizar estatísticas
+        this.updateStatistics(trade, pl > 0);
+        
+        // Remover da lista ativa
+        this.state.activePositions.splice(index, 1);
+        
+        // Aprendizado da IA
+        this.learning.learnFromTrade(trade);
+        
+        // Notificar fechamento
+        this.emit('positionClosed', trade);
+    }
+    
+    // Cálculo de tamanho da posição com gestão de risco
+    calculatePositionSize(price, type, riskAssessment) {
+        const riskAmount = this.state.currentBalance * this.config.riskPerTrade;
+        const stopDistance = price * this.config.stopLoss;
+        
+        // Ajustar pelo assessment de risco
+        const riskMultiplier = riskAssessment.safetyScore / 100;
+        const adjustedRisk = riskAmount * riskMultiplier;
+        
+        // Calcular tamanho
+        let size = adjustedRisk / stopDistance;
+        
+        // Limitar pelo capital disponível
+        const maxSize = (this.state.currentBalance * 0.1) / price;
+        size = Math.min(size, maxSize);
+        
+        return parseFloat(size.toFixed(4));
+    }
+    
+    // Sistema de aprendizado de máquina
+    updateLearning(tradeOutcome) {
+        this.learning.updateModel(tradeOutcome);
+        
+        // Ajustar estratégias baseado no desempenho
+        if (tradeOutcome.win) {
+            this.modules.strategyEngine.reinforceStrategy(tradeOutcome.strategy);
+        } else {
+            this.modules.strategyEngine.adjustStrategy(tradeOutcome.strategy);
+        }
+    }
+    
+    // Dashboard e métricas
+    getDashboard() {
+        return {
+            balance: this.state.currentBalance,
+            dailyPL: this.state.dailyPL,
+            activePositions: this.state.activePositions.length,
+            todayTrades: this.state.todayTrades,
+            winRate: this.state.winRate,
+            performance: this.calculatePerformance(),
+            riskMetrics: this.calculateRiskMetrics(),
+            recommendations: this.getRecommendations()
+        };
+    }
+    
+    // Interface para React Native/Expo
+    setupMobileInterface() {
+        return {
+            // Componentes de UI
+            components: {
+                Dashboard: this.createDashboardComponent(),
+                ChartView: this.createChartComponent(),
+                TradePanel: this.createTradePanel(),
+                Alerts: this.createAlertsComponent()
+            },
+            
+            // Handlers de eventos
+            handlers: {
+                onTrade: (signal) => this.handleMobileTrade(signal),
+                onSettingsUpdate: (settings) => this.updateSettings(settings),
+                onMarketData: (data) => this.processMobileMarketData(data)
+            },
+            
+            // Estado para React
+            state: {
+                marketData: null,
+                signals: [],
+                positions: this.state.activePositions,
+                dashboard: this.getDashboard()
+            }
+        };
+    }
+    
+    // Processamento otimizado para mobile
+    processMobileMarketData(data) {
+        // Processamento leve para dispositivos móveis
+        return {
+            price: data.price,
+            change: data.change,
+            volume: data.volume,
+            indicators: this.calculateLightIndicators(data),
+            timestamp: Date.now()
+        };
+    }
+    
+    // Utilitários
+    isTradingHours() {
+        const now = new Date();
+        const currentTime = now.getHours() * 100 + now.getMinutes();
+        const [startHour, startMinute] = this.config.tradingHours.start.split(':').map(Number);
+        const [endHour, endMinute] = this.config.tradingHours.end.split(':').map(Number);
+        
+        const startTime = startHour * 100 + startMinute;
+        const endTime = endHour * 100 + endMinute;
+        
+        return currentTime >= startTime && currentTime <= endTime;
+    }
+    
+    generateTradeId() {
+        return `TRADE_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+    
+    calculatePL(trade) {
+        if (trade.type === "BUY") {
+            return (trade.exitPrice - trade.entryPrice) * trade.positionSize;
+        } else {
+            return (trade.entryPrice - trade.exitPrice) * trade.positionSize;
+        }
+    }
+    
+    calculateUnrealizedPL(trade) {
+        if (!trade.currentPrice) return 0;
+        
+        if (trade.type === "BUY") {
+            return (trade.currentPrice - trade.entryPrice) * trade.positionSize;
+        } else {
+            return (trade.entryPrice - trade.currentPrice) * trade.positionSize;
+        }
+    }
+    
+    updateStatistics(trade, isWin) {
+        const totalTrades = this.history.filter(h => h.status === "closed").length;
+        const winTrades = this.history.filter(h => h.realizedPL > 0).length;
+        
+        this.state.winRate = totalTrades > 0 ? (winTrades / totalTrades) * 100 : 0;
+    }
+    
+    updateTrailingStop(trade, currentPrice) {
+        if (trade.type === "BUY") {
+            const newStop = currentPrice * (1 - this.config.stopLoss * 0.8);
+            if (newStop > trade.stopLoss) {
+                trade.stopLoss = newStop;
+            }
+        } else {
+            const newStop = currentPrice * (1 + this.config.stopLoss * 0.8);
+            if (newStop < trade.stopLoss) {
+                trade.stopLoss = newStop;
+            }
+        }
+    }
+}
+
+// Módulo de Análise de Mercado
+class MarketAnalyzer {
+    calculateIndicators(data) {
+        // Implementação de indicadores técnicos
+        const prices = data.prices || [];
+        const volumes = data.volumes || [];
+        
+        if (prices.length < 50) return {};
+        
+        // Médias Móveis
+        const ema9 = this.calculateEMA(prices, 9);
+        const ema21 = this.calculateEMA(prices, 21);
+        const ema50 = this.calculateEMA(prices, 50);
+        
+        // RSI
+        const rsi = this.calculateRSI(prices, 14);
+        
+        // Bandas de Bollinger
+        const bb = this.calculateBollingerBands(prices, 20);
+        
+        // Volume
+        const volumeAvg = this.average(volumes.slice(-20));
+        const currentVolume = volumes[volumes.length - 1] || 0;
+        const volumeRatio = currentVolume / volumeAvg;
+        
+        // VWAP (Volume Weighted Average Price)
+        const vwap = this.calculateVWAP(prices, volumes);
+        
+        return {
+            ema9: ema9[ema9.length - 1],
+            ema21: ema21[ema21.length - 1],
+            ema50: ema50[ema50.length - 1],
+            rsi: rsi[rsi.length - 1],
+            bb: {
+                upper: bb.upper[bb.upper.length - 1],
+                middle: bb.middle[bb.middle.length - 1],
+                lower: bb.lower[bb.lower.length - 1]
+            },
+            volumeRatio: volumeRatio,
+            vwap: vwap,
+            atr: this.calculateATR(prices, 14)
+        };
+    }
+    
+    calculateEMA(prices, period) {
+        const k = 2 / (period + 1);
+        const ema = [prices[0]];
+        
+        for (let i = 1; i < prices.length; i++) {
+            ema.push(prices[i] * k + ema[i-1] * (1 - k));
+        }
+        
+        return ema;
+    }
+    
+    calculateRSI(prices, period) {
+        const gains = [];
+        const losses = [];
+        
+        for (let i = 1; i < prices.length; i++) {
+            const change = prices[i] - prices[i-1];
+            gains.push(change > 0 ? change : 0);
+            losses.push(change < 0 ? -change : 0);
+        }
+        
+        const avgGain = this.average(gains.slice(0, period));
+        const avgLoss = this.average(losses.slice(0, period));
+        
+        const rsi = [100 - (100 / (1 + avgGain / avgLoss))];
+        
+        for (let i = period; i < gains.length; i++) {
+            const avgG = (rsi[rsi.length-1] * (period-1) + gains[i]) / period;
+            const avgL = ((100 - rsi[rsi.length-1]) * (period-1) + losses[i]) / period;
+            rsi.push(100 - (100 / (1 + avgG / avgL)));
+        }
+        
+        return rsi;
+    }
+    
+    calculateBollingerBands(prices, period, stdDev = 2) {
+        const sma = this.calculateSMA(prices, period);
+        const upper = [];
+        const lower = [];
+        
+        for (let i = period - 1; i < prices.length; i++) {
+            const slice = prices.slice(i - period + 1, i + 1);
+            const std = this.standardDeviation(slice);
+            upper.push(sma[i - period + 1] + std * stdDev);
+            lower.push(sma[i - period + 1] - std * stdDev);
+        }
+        
+        return {
+            upper,
+            middle: sma.slice(period - 1),
+            lower
+        };
+    }
+    
+    calculateSMA(prices, period) {
+        const sma = [];
+        for (let i = period - 1; i < prices.length; i++) {
+            const sum = prices.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0);
+            sma.push(sum / period);
+        }
+        return sma;
+    }
+    
+    calculateVWAP(prices, volumes) {
+        let cumulativeTPV = 0;
+        let cumulativeVolume = 0;
+        
+        for (let i = 0; i < prices.length; i++) {
+            const typicalPrice = (prices[i].high + prices[i].low + prices[i].close) / 3;
+            cumulativeTPV += typicalPrice * volumes[i];
+            cumulativeVolume += volumes[i];
+        }
+        
+        return cumulativeTPV / cumulativeVolume;
+    }
+    
+    calculateATR(prices, period) {
+        const tr = [];
+        for (let i = 1; i < prices.length; i++) {
+            const highLow = prices[i].high - prices[i].low;
+            const highClose = Math.abs(prices[i].high - prices[i-1].close);
+            const lowClose = Math.abs(prices[i].low - prices[i-1].close);
+            tr.push(Math.max(highLow, highClose, lowClose));
+        }
+        return this.average(tr.slice(-period));
+    }
+    
+    average(arr) {
+        return arr.reduce((a, b) => a + b, 0) / arr.length;
+    }
+    
+    standardDeviation(arr) {
+        const avg = this.average(arr);
+        const squareDiffs = arr.map(value => Math.pow(value - avg, 2));
+        const avgSquareDiff = this.average(squareDiffs);
+        return Math.sqrt(avgSquareDiff);
+    }
+}
+
+// Módulo de Gestão de Risco
+class RiskManager {
+    constructor(config) {
+        this.config = config;
+        this.riskLevels = {
+            low: 0.3,
+            medium: 0.6,
+            high: 1.0
+        };
+    }
+    
+    assessRisk(analysis) {
+        const riskScore = this.calculateRiskScore(analysis);
+        const safetyScore = 100 - riskScore;
+        
+        return {
+            riskScore,
+            safetyScore,
+            maxPositionSize: this.calculateMaxPosition(analysis, safetyScore),
+            allowedLeverage: this.calculateLeverage(riskScore),
+            recommendation: this.getRiskRecommendation(riskScore)
+        };
+    }
+    
+    calculateRiskScore(analysis) {
+        let score = 50; // Base score
+        
+        // Volatilidade
+        if (analysis.indicators.atr) {
+            const volatilityFactor = analysis.indicators.atr / analysis.price;
+            score += volatilityFactor * 100 * 20;
+        }
+        
+        // Volume
+        if (analysis.indicators.volumeRatio > 2) {
+            score += 15;
+        }
+        
+        // Tendência
+        if (analysis.indicators.ema9 > analysis.indicators.ema21) {
+            score -= 10; // Tendência de alta reduz risco
+        } else {
+            score += 10;
+        }
+        
+        // RSI extremo
+        if (analysis.indicators.rsi > 80 || analysis.indicators.rsi < 20) {
+            score += 10;
+        }
+        
+        return Math.max(0, Math.min(100, score));
+    }
+    
+    calculateMaxPosition(analysis, safetyScore) {
+        const baseSize = this.config.riskPerTrade * 100;
+        return baseSize * (safetyScore / 100);
+    }
+    
+    calculateLeverage(riskScore) {
+        if (riskScore < 30) return 3;
+        if (riskScore < 50) return 2;
+        if (riskScore < 70) return 1.5;
+        return 1;
+    }
+    
+    getRiskRecommendation(riskScore) {
+        if (riskScore < 30) return "HIGH_CONFIDENCE";
+        if (riskScore < 50) return "MODERATE_CONFIDENCE";
+        if (riskScore < 70) return "LOW_CONFIDENCE";
+        return "AVOID_TRADE";
+    }
+}
+
+// Módulo de Estratégias
+class StrategyEngine {
+    constructor() {
+        this.strategies = {
+            MA_CROSSOVER: { weight: 1.0, successRate: 0.55 },
+            RSI_REVERSAL: { weight: 0.8, successRate: 0.60 },
+            BREAKOUT: { weight: 1.2, successRate: 0.50 },
+            MEAN_REVERSION: { weight: 0.9, successRate: 0.58 }
+        };
+    }
+    
+    reinforceStrategy(strategyName) {
+        if (this.strategies[strategyName]) {
+            this.strategies[strategyName].weight *= 1.05;
+            this.strategies[strategyName].successRate = 
+                (this.strategies[strategyName].successRate * 0.95) + 0.05;
+        }
+    }
+    
+    adjustStrategy(strategyName) {
+        if (this.strategies[strategyName]) {
+            this.strategies[strategyName].weight *= 0.95;
+            this.strategies[strategyName].successRate *= 0.98;
+        }
+    }
+}
+
+// Módulo de Controle Emocional
+class EmotionController {
+    constructor() {
+        this.emotionalState = {
+            confidence: 70,
+            greedLevel: 0,
+            fearLevel: 0,
+            discipline: 90
+        };
+        
+        this.maxTradesPerHour = 5;
+        this.tradeCountThisHour = 0;
+    }
+    
+    checkEmotionalState(tradeSignal) {
+        // Prevenir overtrading
+        if (this.tradeCountThisHour >= this.maxTradesPerHour) {
+            return { allowed: false, reason: "Overtrading prevention" };
+        }
+        
+        // Controlar ganância
+        if (this.emotionalState.greedLevel > 70) {
+            return { allowed: false, reason: "Greed level too high" };
+        }
+        
+        // Controlar medo
+        if (this.emotionalState.fearLevel > 80 && tradeSignal.type === "SELL") {
+            return { allowed: false, reason: "Fear level too high for sell" };
+        }
+        
+        return { allowed: true };
+    }
+    
+    updateState(tradeOutcome) {
+        if (tradeOutcome.win) {
+            this.emotionalState.confidence = Math.min(95, this.emotionalState.confidence + 2);
+            this.emotionalState.greedLevel = Math.min(100, this.emotionalState.greedLevel + 5);
+        } else {
+            this.emotionalState.confidence = Math.max(30, this.emotionalState.confidence - 5);
+            this.emotionalState.fearLevel = Math.min(100, this.emotionalState.fearLevel + 8);
+        }
+        
+        // Reset hourly counter
+        setTimeout(() => {
+            this.tradeCountThisHour = 0;
+        }, 3600000);
+    }
+}
+
+// Módulo de Execução
+class ExecutionEngine {
+    constructor() {
+        this.slippage = 0.001; // 0.1% de slippage
+        this.commission = 0.001; // 0.1% de comissão
+    }
+    
+    async executeOrder(order) {
+        // Simulação de execução
+        // Em produção, integrar com API de brokerage
+        
+        const executedPrice = order.type === "BUY" 
+            ? order.price * (1 + this.slippage)
+            : order.price * (1 - this.slippage);
+        
+        return {
+            success: true,
+            executedPrice,
+            commission: order.size * executedPrice * this.commission,
+            timestamp: Date.now()
+        };
+    }
+}
+
+// Módulo de Aprendizado de Máquina
+class MachineLearningModule {
+    constructor() {
+        this.model = {};
+        this.trainingData = [];
+        this.patterns = {};
+    }
+    
+    learnFromTrade(trade) {
+        this.trainingData.push({
+            input: {
+                indicators: trade.analysis.indicators,
+                signal: trade.signal,
+                risk: trade.analysis.riskAssessment
+            },
+            output: {
+                profit: trade.realizedPL > 0,
+                amount: trade.realizedPL,
+                duration: (trade.exitTime - trade.timestamp) / 1000
+            }
+        });
+        
+        // Treinamento incremental (simplificado)
+        if (this.trainingData.length % 10 === 0) {
+            this.retrainModel();
+        }
+    }
+    
+    retrainModel() {
+        // Implementação simplificada de aprendizado
+        // Em produção, usar TensorFlow.js ou similar
+        
+        const recentData = this.trainingData.slice(-100);
+        
+        // Análise de padrões vencedores
+        const winningTrades = recentData.filter(d => d.output.profit);
+        
+        if (winningTrades.length > 0) {
+            this.model.successPatterns = this.extractPatterns(winningTrades);
+        }
+    }
+    
+    extractPatterns(trades) {
+        const patterns = {};
+        
+        trades.forEach(trade => {
+            const key = this.createPatternKey(trade.input);
+            patterns[key] = (patterns[key] || 0) + 1;
+        });
+        
+        return patterns;
+    }
+    
+    createPatternKey(input) {
+        // Criar chave simplificada para padrões
+        return `${input.indicators.rsi > 50 ? 'H' : 'L'}` +
+               `${input.indicators.ema9 > input.indicators.ema21 ? 'U' : 'D'}` +
+               `${input.risk.riskScore < 50 ? 'L' : 'H'}`;
+    }
+}
+
+// Funções auxiliares
+QuantumTraderAI.prototype.calculateSignalStrength = function(indicators) {
+    let strength = 0.5;
+    
+    // Confluência de indicadores aumenta força
+    const confluences = [];
+    
+    if (indicators.ema9 > indicators.ema21 && indicators.ema21 > indicators.ema50) {
+        confluences.push(0.2);
+    }
+    
+    if (indicators.rsi > 55 && indicators.rsi < 70) {
+        confluences.push(0.15);
+    }
+    
+    if (indicators.volumeRatio > 1.5) {
+        confluences.push(0.1);
+    }
+    
+    if (confluences.length > 0) {
+        strength += confluences.reduce((a, b) => a + b, 0) / confluences.length;
+    }
+    
+    return Math.min(strength, 0.95);
+};
+
+QuantumTraderAI.prototype.prioritizeSignals = function(signals, analysis) {
+    return signals
+        .filter(signal => signal.strength > 0.6)
+        .sort((a, b) => b.strength - a.strength)
+        .slice(0, 2); // Top 2 sinais
+};
+
+QuantumTraderAI.prototype.analyzeSentiment = async function(data) {
+    // Análise simplificada de sentimento
+    // Em produção, integrar com APIs de notícias/sentimento
+    
+    const priceChange = data.change || 0;
+    const volumeChange = data.volumeChange || 0;
+    
+    let sentiment = "NEUTRAL";
+    
+    if (priceChange > 0.02 && volumeChange > 0.5) {
+        sentiment = "BULLISH";
+    } else if (priceChange < -0.02 && volumeChange > 0.5) {
+        sentiment = "BEARISH";
+    }
+    
+    return {
+        sentiment,
+        strength: Math.abs(priceChange) * 100
+    };
+};
+
+QuantumTraderAI.prototype.calculateConfidence = function(analysis) {
+    let confidence = 50;
+    
+    // Fatores que aumentam confiança
+    if (analysis.signals.length >= 2) confidence += 20;
+    if (analysis.riskAssessment.safetyScore > 70) confidence += 15;
+    if (analysis.sentiment.strength > 1) confidence += 10;
+    
+    // Fatores que diminuem confiança
+    if (analysis.indicators.rsi > 80 || analysis.indicators.rsi < 20) confidence -= 10;
+    
+    return Math.max(0, Math.min(100, confidence));
+};
+
+QuantumTraderAI.prototype.calculatePerformance = function() {
+    const closedTrades = this.history.filter(h => h.status === "closed");
+    
+    if (closedTrades.length === 0) {
+        return {
+            totalTrades: 0,
+            winRate: 0,
+            avgWin: 0,
+            avgLoss: 0,
+            profitFactor: 0,
+            sharpeRatio: 0
+        };
+    }
+    
+    const winningTrades = closedTrades.filter(t => t.realizedPL > 0);
+    const losingTrades = closedTrades.filter(t => t.realizedPL <= 0);
+    
+    const totalProfit = winningTrades.reduce((sum, t) => sum + t.realizedPL, 0);
+    const totalLoss = Math.abs(losingTrades.reduce((sum, t) => sum + t.realizedPL, 0));
+    
+    return {
+        totalTrades: closedTrades.length,
+        winRate: (winningTrades.length / closedTrades.length) * 100,
+        avgWin: winningTrades.length > 0 ? totalProfit / winningTrades.length : 0,
+        avgLoss: losingTrades.length > 0 ? totalLoss / losingTrades.length : 0,
+        profitFactor: totalLoss > 0 ? totalProfit / totalLoss : totalProfit > 0 ? 99 : 0,
+        sharpeRatio: this.calculateSharpeRatio(closedTrades)
+    };
+};
+
+QuantumTraderAI.prototype.calculateSharpeRatio = function(trades) {
+    if (trades.length < 2) return 0;
+    
+    const returns = trades.map(t => t.realizedPL / (t.entryPrice * t.positionSize));
+    const avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
+    const stdDev = Math.sqrt(
+        returns.map(r => Math.pow(r - avgReturn, 2)).reduce((a, b) => a + b, 0) / returns.length
+    );
+    
+    return stdDev > 0 ? avgReturn / stdDev * Math.sqrt(252) : 0;
+};
+
+QuantumTraderAI.prototype.calculateRiskMetrics = function() {
+    const activePositions = this.state.activePositions;
+    
+    if (activePositions.length === 0) {
+        return {
+            totalExposure: 0,
+            maxDrawdown: 0,
+            var95: 0,
+            riskRewardRatio: 0
+        };
+    }
+    
+    const totalExposure = activePositions.reduce(
+        (sum, p) => sum + (p.entryPrice * p.positionSize), 0
+    );
+    
+    const currentPL = activePositions.reduce(
+        (sum, p) => sum + (p.unrealizedPL || 0), 0
+    );
+    
+    return {
+        totalExposure,
+        portfolioRisk: (totalExposure / this.state.currentBalance) * 100,
+        maxDrawdown: this.calculateMaxDrawdown(),
+        riskRewardRatio: this.calculateAvgRiskReward()
+    };
+};
+
+QuantumTraderAI.prototype.calculateMaxDrawdown = function() {
+    const balances = this.history
+        .filter(h => h.status === "closed")
+        .map(h => h.realizedPL)
+        .reduce((acc, pl, i) => {
+            acc.push((acc[i-1] || this.state.currentBalance) + pl);
+            return acc;
+        }, []);
+    
+    let maxDrawdown = 0;
+    let peak = balances[0] || this.state.currentBalance;
+    
+    for (const balance of balances) {
+        if (balance > peak) peak = balance;
+        const drawdown = (peak - balance) / peak;
+        if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+    }
+    
+    return maxDrawdown * 100;
+};
+
+QuantumTraderAI.prototype.calculateAvgRiskReward = function() {
+    const closedTrades = this.history.filter(h => h.status === "closed");
+    
+    if (closedTrades.length === 0) return 0;
+    
+    const ratios = closedTrades.map(trade => {
+        const risk = Math.abs(trade.stopLoss - trade.entryPrice);
+        const reward = Math.abs(trade.takeProfit - trade.entryPrice);
+        return reward / risk;
+    });
+    
+    return ratios.reduce((a, b) => a + b, 0) / ratios.length;
+};
+
+QuantumTraderAI.prototype.getRecommendations = function() {
+    const recommendations = [];
+    
+    // Verificar se há overtrading
+    if (this.state.todayTrades > 20) {
+        recommendations.push({
+            type: "WARNING",
+            message: "Alto número de trades hoje. Considere reduzir frequência.",
+            priority: "HIGH"
+        });
+    }
+    
+    // Verificar risco de concentração
+    if (this.state.activePositions.length >= this.config.maxPositions) {
+        recommendations.push({
+            type: "INFO",
+            message: "Posições máximas atingidas. Não abra novas posições.",
+            priority: "MEDIUM"
+        });
+    }
+    
+    // Verificar desempenho
+    const perf = this.calculatePerformance();
+    if (perf.winRate < 40 && this.state.todayTrades > 10) {
+        recommendations.push({
+            type: "WARNING",
+            message: "Win rate baixa hoje. Considere pausar trading.",
+            priority: "HIGH"
+        });
+    }
+    
+    return recommendations;
+};
+
+// Exportação para uso em React Native/Expo
+export { QuantumTraderAI };
+
+// Exemplo de uso:
+/*
+import { QuantumTraderAI } from './QuantumTraderAI.js';
+
+// Inicializar a IA
+const trader = new QuantumTraderAI({
+    initialBalance: 10000,
+    riskPerTrade: 0.02,
+    maxPositions: 3
+});
+
+// Conectar ao mercado
+const marketData = {
+    price: 150.50,
+    volume: 1000000,
+    change: 0.02,
+    prices: [149, 150, 150.5, 151, 150.5],
+    volumes: [900000, 950000, 1000000, 1100000, 1050000]
+};
+
+// Analisar mercado
+const analysis = await trader.analyzeMarket("AAPL", marketData);
+
+// Executar trade se houver sinais
+if (analysis.signals.length > 0) {
+    const signal = analysis.signals[0];
+    const tradeResult = await trader.executeTrade(signal, analysis);
+    console.log(tradeResult);
+}
+
+// Obter dashboard
+const dashboard = trader.getDashboard();
+console.log(dashboard);
+*/
